@@ -2,363 +2,273 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
-/// <summary>
-/// ระบบจัดการพื้นที่แพลตฟอร์มที่หายไป
-/// หลังจากหมุนเสร็จ พื้นบางส่วนจะหาย ทำให้ผู้เล่นตก
-/// </summary>
 public class PlatformSectionManager : MonoBehaviour
 {
     [Header("🎯 Platform Sections (4 ส่วน)")]
-    [Tooltip("ลาก GameObject ของพื้นทั้ง 4 ส่วนมาใส่")]
     public List<GameObject> platformSections = new List<GameObject>();
-    
+
     [Header("⏱️ Timing Settings")]
-    [Tooltip("เวลาที่พื้นหายไป (วินาที)")]
     public float disappearDuration = 3f;
-    
-    [Tooltip("ความเร็วในการหายและกลับมา")]
     public float fadeSpeed = 2f;
-    
+
     [Header("🎨 Visual Effects")]
-    [Tooltip("เปิดใช้งานเอฟเฟกต์การหาย")]
     public bool useFadeEffect = true;
-    
-    [Tooltip("สีเตือนก่อนพื้นหาย")]
     public Color warningColor = Color.red;
-    
-    [Tooltip("เวลาแสดงสัญญาณเตือน (วินาที)")]
-    public float warningTime = 0.5f;
-    
+
+    [Header("🎯 Danger Zones")]
+    public bool showDangerZonesAlways = true;
+    [Range(0f, 1f)]
+    public float dangerZoneAlpha = 0.3f;
+
     [Header("🔊 Audio (Optional)")]
     public AudioClip disappearSound;
     public AudioClip reappearSound;
     public AudioClip warningSound;
-    
+
     private AudioSource audioSource;
-    private Dictionary<GameObject, Material[]> originalMaterials = new Dictionary<GameObject, Material[]>();
+    private Dictionary<GameObject, List<Color>> originalColors = new Dictionary<GameObject, List<Color>>();
     private bool isSectionDisappearing = false;
+    private List<GameObject> dangerZoneOverlays = new List<GameObject>();
+
+    // ตัวแปรสำหรับระบบใหม่
+    private GameObject currentTargetSection;
+    private Coroutine warningCoroutine;
 
     void Start()
     {
-        // เตรียม AudioSource
         audioSource = GetComponent<AudioSource>();
         if (audioSource == null && (disappearSound != null || reappearSound != null))
         {
             audioSource = gameObject.AddComponent<AudioSource>();
         }
-        
-        // เก็บ Material เดิมไว้
+
+        // เก็บสีเดิมของพื้นไว้
         foreach (var section in platformSections)
         {
             if (section != null)
             {
                 Renderer[] renderers = section.GetComponentsInChildren<Renderer>();
-                List<Material> mats = new List<Material>();
-                
+                List<Color> colors = new List<Color>();
                 foreach (var renderer in renderers)
                 {
-                    mats.AddRange(renderer.materials);
+                    foreach (var mat in renderer.materials)
+                    {
+                        string colorProp = mat.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+                        colors.Add(mat.HasProperty(colorProp) ? mat.GetColor(colorProp) : Color.white);
+                    }
                 }
-                
-                originalMaterials[section] = mats.ToArray();
+                originalColors[section] = colors;
             }
         }
+
+        if (showDangerZonesAlways)
+        {
+            CreateDangerZoneOverlays();
+        }
     }
 
+    // --------------------------------------------------------------------------
+    // ✅ ส่วนที่แก้ไข Logic ใหม่ (แยกการเตือน กับ การหาย ออกจากกัน)
+    // --------------------------------------------------------------------------
+
     /// <summary>
-    /// ทำให้พื้นบางส่วนหายไป (เรียกหลังจากหมุนเสร็จ)
+    /// 1. เริ่มเฟสเตือน: สุ่มเลือกพื้นและสั่งให้กระพริบวนไปเรื่อยๆ (GameManager เรียกตอนเริ่มหมุน)
     /// </summary>
-    public void MakeRandomSectionDisappear()
+    public void StartWarningPhase()
     {
-        if (isSectionDisappearing || platformSections.Count == 0)
-            return;
-        
-        // สุ่มเลือกส่วนที่จะหาย
+        if (isSectionDisappearing || platformSections.Count == 0) return;
+
+        // สุ่มเลือกพื้นที่จะหาย
         int randomIndex = Random.Range(0, platformSections.Count);
-        GameObject targetSection = platformSections[randomIndex];
-        
-        if (targetSection != null)
-        {
-            StartCoroutine(DisappearAndReappearSequence(targetSection));
-        }
+        currentTargetSection = platformSections[randomIndex];
+
+        // เริ่มกระพริบ (วนลูปไม่รู้จบ จนกว่าจะสั่งหยุด)
+        if (warningCoroutine != null) StopCoroutine(warningCoroutine);
+        warningCoroutine = StartCoroutine(LoopWarningEffect(currentTargetSection));
     }
 
     /// <summary>
-    /// ทำให้หลายส่วนหายพร้อมกัน
+    /// 2. สั่งให้หาย: หยุดกระพริบแล้วเริ่มจางหายจริง (GameManager เรียกตอนล้อหยุดหมุน)
     /// </summary>
-    /// <param name="numberOfSections">จำนวนส่วนที่จะหาย</param>
-    public void MakeMultipleSectionsDisappear(int numberOfSections)
+    public void TriggerDisappear()
     {
-        if (isSectionDisappearing || platformSections.Count == 0)
-            return;
-        
-        // สุ่มเลือกหลายส่วน
-        List<GameObject> selectedSections = new List<GameObject>();
-        List<int> availableIndices = new List<int>();
-        
-        for (int i = 0; i < platformSections.Count; i++)
-        {
-            availableIndices.Add(i);
-        }
-        
-        int count = Mathf.Min(numberOfSections, platformSections.Count);
-        
-        for (int i = 0; i < count; i++)
-        {
-            int randomIndex = Random.Range(0, availableIndices.Count);
-            int sectionIndex = availableIndices[randomIndex];
-            selectedSections.Add(platformSections[sectionIndex]);
-            availableIndices.RemoveAt(randomIndex);
-        }
-        
-        StartCoroutine(DisappearMultipleSections(selectedSections));
+        if (currentTargetSection == null) return;
+
+        // หยุดการกระพริบ
+        if (warningCoroutine != null) StopCoroutine(warningCoroutine);
+
+        // เริ่มกระบวนการหายไป
+        StartCoroutine(DisappearSequence(currentTargetSection));
     }
 
-    /// <summary>
-    /// ลำดับการหายและกลับมาของพื้น 1 ส่วน
-    /// </summary>
-    IEnumerator DisappearAndReappearSequence(GameObject section)
+    // Coroutine กระพริบไฟเตือนแบบวนลูป (รอคำสั่งหยุด)
+    IEnumerator LoopWarningEffect(GameObject section)
     {
-        isSectionDisappearing = true;
-        
-        Debug.Log($"[Platform] พื้นส่วน {section.name} กำลังจะหาย!");
-        
-        // 1. แสดงสัญญาณเตือน
-        yield return StartCoroutine(ShowWarning(section));
-        
-        // 2. ทำให้พื้นหาย
-        yield return StartCoroutine(DisappearSection(section));
-        
-        // 3. รอตามเวลาที่กำหนด
-        Debug.Log($"[Platform] รอ {disappearDuration} วินาที...");
-        yield return new WaitForSeconds(disappearDuration);
-        
-        // 4. ทำให้พื้นกลับมา
-        yield return StartCoroutine(ReappearSection(section));
-        
-        Debug.Log($"[Platform] พื้นส่วน {section.name} กลับมาแล้ว!");
-        
-        isSectionDisappearing = false;
-    }
-
-    /// <summary>
-    /// ลำดับการหายและกลับมาของพื้นหลายส่วน
-    /// </summary>
-    IEnumerator DisappearMultipleSections(List<GameObject> sections)
-    {
-        isSectionDisappearing = true;
-        
-        // 1. แสดงสัญญาณเตือนทุกส่วน
-        List<Coroutine> warningCoroutines = new List<Coroutine>();
-        foreach (var section in sections)
-        {
-            warningCoroutines.Add(StartCoroutine(ShowWarning(section)));
-        }
-        
-        // รอให้เตือนเสร็จ
-        yield return new WaitForSeconds(warningTime);
-        
-        // 2. ทำให้ทุกส่วนหายพร้อมกัน
-        foreach (var section in sections)
-        {
-            StartCoroutine(DisappearSection(section));
-        }
-        
-        yield return new WaitForSeconds(1f / fadeSpeed);
-        
-        // 3. รอตามเวลาที่กำหนด
-        yield return new WaitForSeconds(disappearDuration);
-        
-        // 4. ทำให้ทุกส่วนกลับมาพร้อมกัน
-        foreach (var section in sections)
-        {
-            StartCoroutine(ReappearSection(section));
-        }
-        
-        yield return new WaitForSeconds(1f / fadeSpeed);
-        
-        isSectionDisappearing = false;
-    }
-
-    /// <summary>
-    /// แสดงสัญญาณเตือนก่อนพื้นหาย
-    /// </summary>
-    IEnumerator ShowWarning(GameObject section)
-    {
-        if (!useFadeEffect)
-            yield break;
-        
-        // เล่นเสียงเตือน
-        if (audioSource != null && warningSound != null)
-        {
-            audioSource.PlayOneShot(warningSound);
-        }
-        
+        if (audioSource != null && warningSound != null) audioSource.PlayOneShot(warningSound);
         Renderer[] renderers = section.GetComponentsInChildren<Renderer>();
-        float elapsed = 0f;
-        
-        // กระพริบสีเตือน
-        while (elapsed < warningTime)
+
+        float startTime = Time.time;
+
+        while (true)
         {
-            elapsed += Time.deltaTime;
-            float t = Mathf.PingPong(elapsed * 10f, 1f);
-            
+            float elapsed = Time.time - startTime;
+            // ยิ่งนาน ยิ่งกระพริบเร็ว (ลูกเล่นเสริม)
+            float flashSpeed = Mathf.Lerp(3f, 20f, elapsed / 5.0f);
+            float t = Mathf.PingPong(Time.time * flashSpeed, 1f);
+
             foreach (var renderer in renderers)
             {
                 foreach (var mat in renderer.materials)
                 {
-                    if (mat.HasProperty("_Color"))
+                    string colorProp = mat.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+                    if (mat.HasProperty(colorProp))
                     {
-                        mat.color = Color.Lerp(Color.white, warningColor, t);
+                        mat.SetColor(colorProp, Color.Lerp(Color.white, warningColor, t));
                     }
                 }
             }
-            
             yield return null;
         }
     }
 
-    /// <summary>
-    /// ทำให้พื้นหาย
-    /// </summary>
+    // ลำดับการหายไป -> รอ -> กลับมา
+    IEnumerator DisappearSequence(GameObject section)
+    {
+        isSectionDisappearing = true;
+
+        // สั่งให้จางหาย (Fade Out)
+        yield return StartCoroutine(DisappearSection(section));
+
+        // รอเวลาที่กำหนด (ช่วงที่ผู้เล่นจะร่วง)
+        yield return new WaitForSeconds(disappearDuration);
+
+        // สั่งให้กลับมา (Fade In)
+        yield return StartCoroutine(ReappearSection(section));
+
+        // รีเซ็ตค่า
+        isSectionDisappearing = false;
+        currentTargetSection = null;
+    }
+
+    // --------------------------------------------------------------------------
+    // จบส่วนแก้ไข
+    // --------------------------------------------------------------------------
+
+    void CreateDangerZoneOverlays()
+    {
+        foreach (var section in platformSections)
+        {
+            if (section == null) continue;
+            GameObject overlay = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            overlay.name = $"{section.name}_DangerOverlay";
+            overlay.transform.SetParent(section.transform);
+            overlay.transform.localPosition = new Vector3(0, 0.01f, 0);
+            overlay.transform.localRotation = Quaternion.identity;
+            overlay.transform.localScale = new Vector3(1, 0.01f, 1);
+            Destroy(overlay.GetComponent<Collider>());
+
+            Material redMaterial = new Material(Shader.Find("Standard"));
+            Color redColor = Color.red;
+            redColor.a = dangerZoneAlpha;
+            redMaterial.color = redColor;
+
+            // ตั้งค่า Material ให้เป็น Transparent
+            redMaterial.SetFloat("_Mode", 3);
+            redMaterial.SetInt("_SrcBlend", (int)UnityEngine.Rendering.BlendMode.SrcAlpha);
+            redMaterial.SetInt("_DstBlend", (int)UnityEngine.Rendering.BlendMode.OneMinusSrcAlpha);
+            redMaterial.SetInt("_ZWrite", 0);
+            redMaterial.renderQueue = 3000;
+
+            overlay.GetComponent<Renderer>().material = redMaterial;
+            overlay.GetComponent<Renderer>().shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            dangerZoneOverlays.Add(overlay);
+        }
+    }
+
     IEnumerator DisappearSection(GameObject section)
     {
-        // เล่นเสียงหาย
-        if (audioSource != null && disappearSound != null)
-        {
-            audioSource.PlayOneShot(disappearSound);
-        }
-        
+        if (audioSource != null && disappearSound != null) audioSource.PlayOneShot(disappearSound);
         Renderer[] renderers = section.GetComponentsInChildren<Renderer>();
         Collider[] colliders = section.GetComponentsInChildren<Collider>();
-        
+
         if (useFadeEffect)
         {
-            // ค่อยๆ จางหาย
             float elapsed = 0f;
             float duration = 1f / fadeSpeed;
-            
             while (elapsed < duration)
             {
                 elapsed += Time.deltaTime;
                 float alpha = 1f - (elapsed / duration);
-                
                 foreach (var renderer in renderers)
                 {
                     foreach (var mat in renderer.materials)
                     {
-                        if (mat.HasProperty("_Color"))
+                        string colorProp = mat.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+                        if (mat.HasProperty(colorProp))
                         {
-                            Color color = mat.color;
-                            color.a = alpha;
-                            mat.color = color;
+                            Color c = mat.GetColor(colorProp); c.a = alpha; mat.SetColor(colorProp, c);
                         }
                     }
                 }
-                
                 yield return null;
             }
         }
-        
-        // ปิด Renderer และ Collider
-        foreach (var renderer in renderers)
-        {
-            renderer.enabled = false;
-        }
-        
-        foreach (var collider in colliders)
-        {
-            collider.enabled = false;
-        }
-        
-        Debug.Log($"[Platform] {section.name} หายไปแล้ว!");
+        foreach (var r in renderers) r.enabled = false;
+        foreach (var c in colliders) c.enabled = false;
     }
 
-    /// <summary>
-    /// ทำให้พื้นกลับมา
-    /// </summary>
     IEnumerator ReappearSection(GameObject section)
     {
-        // เล่นเสียงกลับมา
-        if (audioSource != null && reappearSound != null)
-        {
-            audioSource.PlayOneShot(reappearSound);
-        }
-        
+        if (audioSource != null && reappearSound != null) audioSource.PlayOneShot(reappearSound);
         Renderer[] renderers = section.GetComponentsInChildren<Renderer>();
         Collider[] colliders = section.GetComponentsInChildren<Collider>();
-        
-        // เปิด Renderer และ Collider
-        foreach (var renderer in renderers)
-        {
-            renderer.enabled = true;
-        }
-        
-        foreach (var collider in colliders)
-        {
-            collider.enabled = true;
-        }
-        
+        foreach (var r in renderers) r.enabled = true;
+        foreach (var c in colliders) c.enabled = true;
+
         if (useFadeEffect)
         {
-            // ค่อยๆ ปรากฏ
             float elapsed = 0f;
             float duration = 1f / fadeSpeed;
-            
             while (elapsed < duration)
             {
                 elapsed += Time.deltaTime;
                 float alpha = elapsed / duration;
-                
                 foreach (var renderer in renderers)
                 {
                     foreach (var mat in renderer.materials)
                     {
-                        if (mat.HasProperty("_Color"))
+                        string colorProp = mat.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+                        if (mat.HasProperty(colorProp))
                         {
-                            Color color = mat.color;
-                            color.a = alpha;
-                            mat.color = color;
+                            Color c = mat.GetColor(colorProp); c.a = alpha; mat.SetColor(colorProp, c);
                         }
                     }
                 }
-                
                 yield return null;
             }
         }
-        
-        // คืนสีเดิม
         RestoreOriginalColors(section);
-        
-        Debug.Log($"[Platform] {section.name} กลับมาแล้ว!");
     }
 
-    /// <summary>
-    /// คืนสีเดิมให้กับพื้น
-    /// </summary>
     void RestoreOriginalColors(GameObject section)
     {
-        if (!originalMaterials.ContainsKey(section))
-            return;
-        
+        if (!originalColors.ContainsKey(section)) return;
         Renderer[] renderers = section.GetComponentsInChildren<Renderer>();
-        Material[] originals = originalMaterials[section];
-        int index = 0;
-        
+        List<Color> colors = originalColors[section];
+        int colorIndex = 0;
         foreach (var renderer in renderers)
         {
-            for (int i = 0; i < renderer.materials.Length && index < originals.Length; i++, index++)
+            foreach (var mat in renderer.materials)
             {
-                renderer.materials[i].color = originals[index].color;
+                if (colorIndex < colors.Count)
+                {
+                    string prop = mat.HasProperty("_BaseColor") ? "_BaseColor" : "_Color";
+                    if (mat.HasProperty(prop)) mat.SetColor(prop, colors[colorIndex]);
+                    colorIndex++;
+                }
             }
         }
     }
 
-    /// <summary>
-    /// ตรวจสอบว่ากำลังทำให้พื้นหายอยู่หรือไม่
-    /// </summary>
-    public bool IsDisappearing()
-    {
-        return isSectionDisappearing;
-    }
+    public bool IsDisappearing() => isSectionDisappearing;
 }

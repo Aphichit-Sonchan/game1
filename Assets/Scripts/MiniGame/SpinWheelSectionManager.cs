@@ -1,13 +1,10 @@
 ﻿using UnityEngine;
 
-/// <summary>
-/// จัดการส่วนของ Spin Wheel - สุ่ม 1 ส่วนเป็นสีแดง
-/// </summary>
 public class SpinWheelSectionManager : MonoBehaviour
 {
-    [Header("🎨 Section Colors")]
-    public Color normalColor = Color.white;
-    public Color dangerColor = Color.red;
+    [Header("🎨 Materials")]
+    public Material normalMaterial;
+    public Material dangerMaterial;
 
     [Header("📦 Section Objects")]
     [Tooltip("4 ส่วนของวงล้อ ตามลำดับ: [0]=0°-90°, [1]=90°-180°, [2]=180°-270°, [3]=270°-360°")]
@@ -18,17 +15,15 @@ public class SpinWheelSectionManager : MonoBehaviour
 
     void Start()
     {
-        // เก็บ Renderer ของแต่ละส่วน
         for (int i = 0; i < 4; i++)
         {
             if (sections[i] != null)
             {
                 sectionRenderers[i] = sections[i].GetComponent<Renderer>();
 
-                // ตรวจสอบว่ามี Renderer หรือไม่
                 if (sectionRenderers[i] == null)
                 {
-                    Debug.LogError($"[SectionManager] Section {i} doesn't have a Renderer!");
+                    Debug.LogError($"[SectionManager] Section {i} ({sections[i].name}) doesn't have a Renderer!");
                 }
             }
             else
@@ -36,45 +31,47 @@ public class SpinWheelSectionManager : MonoBehaviour
                 Debug.LogWarning($"[SectionManager] Section {i} not assigned!");
             }
         }
+
+        if (normalMaterial == null)
+            Debug.LogError("[SectionManager] Normal Material not assigned!");
+
+        if (dangerMaterial == null)
+            Debug.LogError("[SectionManager] Danger Material not assigned!");
+
+        ResetAllSections();
     }
 
-    /// <summary>
-    /// สุ่มเลือก 1 ส่วนให้เป็นสีแดง
-    /// </summary>
     public void SelectRandomDangerSection()
     {
-        // รีเซ็ตทุกส่วนเป็นสีปกติก่อน
         ResetAllSections();
-
-        // สุ่มเลือก 1 ส่วน (0-3)
         dangerSectionIndex = Random.Range(0, 4);
 
-        // เปลี่ยนส่วนนั้นเป็นสีแดง
-        if (sectionRenderers[dangerSectionIndex] != null)
+        if (sectionRenderers[dangerSectionIndex] != null && dangerMaterial != null)
         {
-            sectionRenderers[dangerSectionIndex].material.color = dangerColor;
-            Debug.Log($"[SectionManager] Danger zone: Section {dangerSectionIndex} ({dangerSectionIndex * 90}° - {(dangerSectionIndex + 1) * 90}°)");
+            sectionRenderers[dangerSectionIndex].material = dangerMaterial;
+
+            Debug.Log($"[SectionManager] ========== DANGER ZONE SELECTED ==========");
+            Debug.Log($"[SectionManager] Section Index: {dangerSectionIndex}");
+            Debug.Log($"[SectionManager] Section Name: {sections[dangerSectionIndex].name}");
+            Debug.Log($"[SectionManager] Angle Range: {dangerSectionIndex * 90}° - {(dangerSectionIndex + 1) * 90}°");
+            Debug.Log($"[SectionManager] ============================================");
         }
     }
 
-    /// <summary>
-    /// รีเซ็ตทุกส่วนเป็นสีปกติ
-    /// </summary>
     public void ResetAllSections()
     {
+        if (normalMaterial == null) return;
+
         for (int i = 0; i < 4; i++)
         {
             if (sectionRenderers[i] != null)
             {
-                sectionRenderers[i].material.color = normalColor;
+                sectionRenderers[i].material = normalMaterial;
             }
         }
         dangerSectionIndex = -1;
     }
 
-    /// <summary>
-    /// ตรวจสอบว่าผู้เล่นอยู่ในโซนอันตรายหรือไม่
-    /// </summary>
     public bool IsPlayerInDangerZone(PlayerController player, float platformRotation)
     {
         if (dangerSectionIndex == -1)
@@ -83,28 +80,40 @@ public class SpinWheelSectionManager : MonoBehaviour
             return false;
         }
 
-        if (!player.isAlive) return false;
+        if (!player.isAlive)
+            return false;
 
-        // ดึงมุมของผู้เล่น
-        float playerAngle = player.GetCurrentAngle();
+        // ดึงมุมของผู้เล่นเทียบกับ RotatingBase (local angle)
+        float playerLocalAngle = player.GetCurrentAngle();
 
-        // คำนวณมุมรวมหลังจากแพลตฟอร์มหมุน
-        float totalAngle = (playerAngle + platformRotation) % 360f;
-        if (totalAngle < 0) totalAngle += 360f;
+        // คำนวณมุมของผู้เล่นในโลก (world angle)
+        // เนื่องจากผู้เล่นหมุนตาม RotatingBase
+        // มุมจริง = มุม local + มุมที่ RotatingBase หมุนไป
+        float playerWorldAngle = playerLocalAngle + platformRotation;
 
-        // แปลงมุมเป็นส่วน (0-3)
-        // Section 0 = 0°-90°
-        // Section 1 = 90°-180°
-        // Section 2 = 180°-270°
-        // Section 3 = 270°-360°
-        int playerSection = Mathf.FloorToInt(totalAngle / 90f);
-        if (playerSection >= 4) playerSection = 3; // ป้องกัน edge case
+        // Normalize เป็น 0-360
+        playerWorldAngle = ((playerWorldAngle % 360f) + 360f) % 360f;
 
+        // แบ่งเป็น 4 ส่วน
+        // Section 0 = 0° - 90°
+        // Section 1 = 90° - 180°
+        // Section 2 = 180° - 270°
+        // Section 3 = 270° - 360°
+        int playerSection = Mathf.FloorToInt(playerWorldAngle / 90f);
+
+        // Handle edge case
+        if (playerSection >= 4) playerSection = 0;
+
+        // ตรวจสอบว่าอยู่ในโซนอันตรายหรือไม่
         bool inDanger = (playerSection == dangerSectionIndex);
 
-        Debug.Log($"[SectionManager] {player.playerName}: " +
-                  $"angle={totalAngle:F1}°, section={playerSection}, " +
-                  $"danger={dangerSectionIndex}, inDanger={inDanger}");
+        Debug.Log($"[SectionManager] Player: {player.playerName}");
+        Debug.Log($"  Local Angle: {playerLocalAngle:F1}°");
+        Debug.Log($"  Platform Rotation: {platformRotation:F1}°");
+        Debug.Log($"  World Angle: {playerWorldAngle:F1}°");
+        Debug.Log($"  Player Section: {playerSection}");
+        Debug.Log($"  Danger Section: {dangerSectionIndex}");
+        Debug.Log($"  In Danger? {(inDanger ? "❌ YES" : "✅ NO")}");
 
         return inDanger;
     }

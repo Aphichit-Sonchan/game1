@@ -9,10 +9,10 @@ public class PlatformRotationManager : MonoBehaviour
     [Header("Platform Settings")]
     public Transform platform;
     public float rotationDuration = 2f;
-    
+
     [Header("Player Settings")]
     public List<PlayerController> players = new List<PlayerController>();
-    
+
     [Header("UI Elements")]
     public TextMeshProUGUI timerText;
     public TextMeshProUGUI statusText;
@@ -21,15 +21,15 @@ public class PlatformRotationManager : MonoBehaviour
     public TextMeshProUGUI winnerText;
     public Button startButton;
     public Button resetButton;
-    
+
     [Header("Game Settings")]
     public float countdownTime = 5f;
     public float checkDelay = 1.5f;
-    
+
     private bool isGameRunning = false;
     private int currentRound = 1;
     private float currentPlatformRotation = 0f;
-    
+
     private int[] possibleRotations = { 90, 180, 270, 360 };
 
     void Start()
@@ -44,7 +44,7 @@ public class PlatformRotationManager : MonoBehaviour
     public void StartGame()
     {
         if (isGameRunning) return;
-        
+
         isGameRunning = true;
         startButton.interactable = false;
         StartCoroutine(GameLoop());
@@ -58,7 +58,7 @@ public class PlatformRotationManager : MonoBehaviour
             currentRound++;
             yield return new WaitForSeconds(2f);
         }
-        
+
         EndGame();
     }
 
@@ -66,7 +66,7 @@ public class PlatformRotationManager : MonoBehaviour
     {
         // Phase 1: Rotation
         statusText.text = $"รอบที่ {currentRound} - กำลังหมุน...";
-        
+
         foreach (var player in players)
         {
             if (player.isAlive)
@@ -74,15 +74,15 @@ public class PlatformRotationManager : MonoBehaviour
                 player.SetCanMove(false);
             }
         }
-        
+
         int rotationAmount = possibleRotations[Random.Range(0, possibleRotations.Length)];
         rotationInfoText.text = $"หมุน {rotationAmount}°";
-        
+
         yield return StartCoroutine(RotatePlatform(rotationAmount));
-        
+
         // Phase 2: Countdown and movement
         statusText.text = "เคลื่อนที่เลย!";
-        
+
         foreach (var player in players)
         {
             if (player.isAlive)
@@ -90,18 +90,18 @@ public class PlatformRotationManager : MonoBehaviour
                 player.SetCanMove(true);
             }
         }
-        
+
         yield return StartCoroutine(Countdown());
-        
+
         // Phase 3: Check eliminations
-        
+
         foreach (var player in players)
         {
             player.SetCanMove(false);
         }
-        
+
         statusText.text = "กำลังตรวจสอบ...";
-        
+
         yield return StartCoroutine(CheckEliminations());
     }
 
@@ -110,18 +110,18 @@ public class PlatformRotationManager : MonoBehaviour
         float startRotation = currentPlatformRotation;
         float targetRotation = currentPlatformRotation + rotationAmount;
         float elapsed = 0f;
-        
+
         while (elapsed < rotationDuration)
         {
             elapsed += Time.deltaTime;
             float t = elapsed / rotationDuration;
-            
+
             currentPlatformRotation = Mathf.Lerp(startRotation, targetRotation, t);
             platform.rotation = Quaternion.Euler(0, currentPlatformRotation, 0);
-            
+
             yield return null;
         }
-        
+
         currentPlatformRotation = targetRotation % 360f;
         platform.rotation = Quaternion.Euler(0, currentPlatformRotation, 0);
     }
@@ -133,23 +133,25 @@ public class PlatformRotationManager : MonoBehaviour
             timerText.text = i.ToString();
             yield return new WaitForSeconds(1f);
         }
-        
+
         timerText.text = "0";
     }
 
     IEnumerator CheckEliminations()
     {
         int eliminatedCount = 0;
-        
+
         foreach (var player in players)
         {
-            if (player.isAlive && !player.IsOnSafePlatform(currentPlatformRotation))
+            // ✅ แก้ไข: เปลี่ยนจากเรียก player.IsOnSafePlatform ที่ Error
+            // มาใช้ฟังก์ชัน IsPlayerSafe ที่สร้างขึ้นใหม่ข้างล่างแทน (ใช้ SphereCast)
+            if (player.isAlive && !IsPlayerSafe(player))
             {
                 player.Eliminate();
                 eliminatedCount++;
             }
         }
-        
+
         if (eliminatedCount > 0)
         {
             statusText.text = $"มี {eliminatedCount} คนตกลงไป!";
@@ -158,14 +160,40 @@ public class PlatformRotationManager : MonoBehaviour
         {
             statusText.text = "ทุกคนปลอดภัย!";
         }
-        
+
         yield return new WaitForSeconds(checkDelay);
+    }
+
+    // ✅ เพิ่มฟังก์ชันใหม่: ตรวจสอบพื้นด้วย Physics SphereCast (แม่นยำกว่า)
+    bool IsPlayerSafe(PlayerController player)
+    {
+        // ยิงลำแสงจากหัวผู้เล่นลงพื้น
+        Vector3 origin = player.transform.position + Vector3.up * 1.5f;
+        Vector3 direction = Vector3.down;
+        float maxDistance = 5f;
+        float radius = 0.2f; // ขนาดลำแสง
+
+        // ยิง SphereCast ทะลุทุกอย่าง
+        RaycastHit[] hits = Physics.SphereCastAll(origin, radius, direction, maxDistance);
+
+        foreach (var hit in hits)
+        {
+            // ถ้าชนอะไรที่ไม่ใช่ตัวเอง แปลว่ามีพื้นรองรับ
+            if (hit.collider.gameObject != player.gameObject)
+            {
+                // Debug.DrawLine(origin, hit.point, Color.green, 2f);
+                return true; // ปลอดภัย
+            }
+        }
+
+        // Debug.DrawRay(origin, direction * maxDistance, Color.red, 2f);
+        return false; // ไม่เจอพื้น = ตก
     }
 
     List<PlayerController> GetAlivePlayers()
     {
         List<PlayerController> alivePlayers = new List<PlayerController>();
-        
+
         foreach (var player in players)
         {
             if (player.isAlive)
@@ -173,14 +201,14 @@ public class PlatformRotationManager : MonoBehaviour
                 alivePlayers.Add(player);
             }
         }
-        
+
         return alivePlayers;
     }
 
     void EndGame()
     {
         List<PlayerController> winners = GetAlivePlayers();
-        
+
         if (winners.Count == 1)
         {
             winnerText.text = $"ผู้ชนะคือ {winners[0].playerName}!";
@@ -189,7 +217,7 @@ public class PlatformRotationManager : MonoBehaviour
         {
             winnerText.text = "เสมอกัน!";
         }
-        
+
         gameOverPanel.SetActive(true);
     }
 

@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections.Generic; // เพิ่มเพื่อใช้ List
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -15,16 +16,16 @@ public class PlayerSpawner : MonoBehaviour
     public Transform platformTransform;
     public float spawnRadius = 3.5f;
     public float spawnHeight = 0.5f;
-    
+
     [Header("Player Settings")]
     public string[] playerNames = { "แดง", "น้ำเงิน", "เขียว", "เหลือง", "ม่วง", "ส้ม" };
     public Color[] playerColors = {
-        new Color(0.906f, 0.298f, 0.235f), // แดง #e74c3c
-        new Color(0.204f, 0.596f, 0.859f), // น้ำเงิน #3498db
-        new Color(0.180f, 0.800f, 0.443f), // เขียว #2ecc71
-        new Color(0.945f, 0.769f, 0.059f), // เหลือง #f1c40f
-        new Color(0.608f, 0.349f, 0.714f), // ม่วง #9b59b6
-        new Color(0.902f, 0.494f, 0.133f)  // ส้ม #e67e22
+        new Color(0.906f, 0.298f, 0.235f), // แดง
+        new Color(0.204f, 0.596f, 0.859f), // น้ำเงิน
+        new Color(0.180f, 0.800f, 0.443f), // เขียว
+        new Color(0.945f, 0.769f, 0.059f), // เหลือง
+        new Color(0.608f, 0.349f, 0.714f), // ม่วง
+        new Color(0.902f, 0.494f, 0.133f)  // ส้ม
     };
 
 #if UNITY_EDITOR
@@ -45,11 +46,21 @@ public class PlayerSpawner : MonoBehaviour
         // ลบผู้เล่นเก่าออก (ถ้ามี)
         ClearExistingPlayers();
 
+        // เตรียม List สำหรับเก็บ Controller เพื่อส่งให้ GameManager
+        List<PlayerController> spawnedControllers = new List<PlayerController>();
+
         // สร้างผู้เล่นใหม่
         for (int i = 0; i < 6; i++)
         {
-            SpawnPlayer(i);
+            PlayerController pc = SpawnPlayer(i);
+            if (pc != null)
+            {
+                spawnedControllers.Add(pc);
+            }
         }
+
+        // ✅ ส่วนที่เพิ่มใหม่: ส่งรายชื่อผู้เล่นไปให้ MarioPartyGameManager อัตโนมัติ
+        AutoAssignToGameManager(spawnedControllers.ToArray());
 
         Debug.Log("Spawned 6 players successfully!");
     }
@@ -59,16 +70,17 @@ public class PlayerSpawner : MonoBehaviour
     {
         // หาผู้เล่นทั้งหมดที่เป็น child ของ platform
         PlayerController[] existingPlayers = platformTransform.GetComponentsInChildren<PlayerController>();
-        
+
         foreach (var player in existingPlayers)
         {
-            DestroyImmediate(player.gameObject);
+            Undo.DestroyObjectImmediate(player.gameObject); // ใช้ Undo เพื่อให้กด Ctrl+Z ได้
         }
 
         Debug.Log("Cleared all existing players.");
     }
 
-    private void SpawnPlayer(int index)
+    // เปลี่ยน Return type เป็น PlayerController เพื่อเอาไปใช้งานต่อ
+    private PlayerController SpawnPlayer(int index)
     {
         // คำนวณมุมสำหรับผู้เล่นแต่ละคน (แบ่งเป็น 6 ส่วนเท่าๆ กัน)
         float angle = index * 60f;
@@ -81,19 +93,25 @@ public class PlayerSpawner : MonoBehaviour
             Mathf.Sin(radians) * spawnRadius
         );
 
-        // สร้าง player
+        // สร้าง player (ใช้ PrefabUtility เพื่อให้ยังเป็น Prefab Instance)
         GameObject playerObj = (GameObject)PrefabUtility.InstantiatePrefab(playerPrefab, platformTransform);
         playerObj.transform.localPosition = localPosition;
         playerObj.name = $"Player_{index + 1}_{playerNames[index]}";
+
+        // Register Undo สำหรับการสร้าง object
+        Undo.RegisterCreatedObjectUndo(playerObj, "Spawn Player");
 
         // ตั้งค่า PlayerController
         PlayerController controller = playerObj.GetComponent<PlayerController>();
         if (controller != null)
         {
-            controller.playerName = $"ผู้เล่น {playerNames[index]}";
+            controller.playerName = $"{playerNames[index]}"; // ตัดคำว่า ผู้เล่น ออกเพื่อให้ชื่อสั้นลง
             controller.playerId = index;
             controller.playerColor = playerColors[index];
             controller.distanceFromCenter = spawnRadius;
+
+            // ตั้งให้ Player 1 เป็น Local Player โดยอัตโนมัติ (เฉพาะคนแรก)
+            controller.isLocalPlayer = (index == 0);
 
             // ตั้งค่าตำแหน่งเริ่มต้น
             controller.SetInitialPosition(angle, spawnRadius, platformTransform.position);
@@ -106,7 +124,29 @@ public class PlayerSpawner : MonoBehaviour
             }
         }
 
-        Debug.Log($"Spawned {playerNames[index]} at angle {angle}° (Position: {localPosition})");
+        return controller;
+    }
+
+    // ✅ ฟังก์ชันช่วยเชื่อมต่อกับ GameManager
+    private void AutoAssignToGameManager(PlayerController[] newPlayers)
+    {
+        MarioPartyGameManager manager = FindObjectOfType<MarioPartyGameManager>();
+        if (manager != null)
+        {
+            // บันทึกการเปลี่ยนแปลงเพื่อให้กด Ctrl+Z ได้ และ Scene รู้ว่ามีการแก้ไข
+            Undo.RecordObject(manager, "Assign Players to Manager");
+
+            manager.players = newPlayers; // ยัดใส่ Array เลย
+
+            // แจ้ง Editor ว่าค่าเปลี่ยนแล้ว (เพื่อให้มัน Save ลง Scene)
+            EditorUtility.SetDirty(manager);
+
+            Debug.Log("✅ Auto-assigned players to MarioPartyGameManager!");
+        }
+        else
+        {
+            Debug.LogWarning("❌ Could not find MarioPartyGameManager in the scene.");
+        }
     }
 
     // วาดเส้นช่วยใน Scene View
@@ -115,7 +155,7 @@ public class PlayerSpawner : MonoBehaviour
         if (platformTransform == null) return;
 
         Gizmos.color = Color.yellow;
-        
+
         // วาดวงกลมแสดงตำแหน่งที่จะ spawn
         for (int i = 0; i < 6; i++)
         {
@@ -129,10 +169,10 @@ public class PlayerSpawner : MonoBehaviour
             );
 
             Gizmos.DrawWireSphere(position, 0.3f);
-            
+
             // วาดเส้นจากศูนย์กลางไปยังตำแหน่ง spawn
             Gizmos.DrawLine(
-                platformTransform.position + Vector3.up * spawnHeight, 
+                platformTransform.position + Vector3.up * spawnHeight,
                 position
             );
         }
@@ -159,9 +199,6 @@ public class PlayerSpawner : MonoBehaviour
 }
 
 #if UNITY_EDITOR
-/// <summary>
-/// Custom Editor สำหรับ PlayerSpawner เพื่อให้ใช้งานง่ายขึ้น
-/// </summary>
 [CustomEditor(typeof(PlayerSpawner))]
 public class PlayerSpawnerEditor : Editor
 {
@@ -174,7 +211,7 @@ public class PlayerSpawnerEditor : Editor
         EditorGUILayout.Space(20);
         EditorGUILayout.LabelField("Quick Actions", EditorStyles.boldLabel);
 
-        if (GUILayout.Button("🎮 Spawn All Players", GUILayout.Height(40)))
+        if (GUILayout.Button("🎮 Spawn All Players & Assign", GUILayout.Height(40)))
         {
             spawner.SpawnAllPlayers();
         }
@@ -190,14 +227,6 @@ public class PlayerSpawnerEditor : Editor
                 spawner.ClearExistingPlayers();
             }
         }
-
-        EditorGUILayout.Space(10);
-        EditorGUILayout.HelpBox(
-            "1. Assign Player Prefab และ Platform Transform\n" +
-            "2. กดปุ่ม 'Spawn All Players' เพื่อสร้างผู้เล่นทั้ง 6 คน\n" +
-            "3. ผู้เล่นจะถูกจัดวางเป็นวงกลมรอบแพลตฟอร์มโดยอัตโนมัติ",
-            MessageType.Info
-        );
     }
 }
 #endif
